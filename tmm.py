@@ -1,197 +1,230 @@
 import numpy as np
 import cmath
 import math
-import matplotlib.pyplot as plt 
 import scipy.integrate as integrate
+
+# Optimizer Imports
+from deap import base
+from deap import benchmarks
+from deap import creator
 
 
 class TransferMatrixMethod:
 
-	CENTRAL_WAVELENGTH_AIR = 650 * math.pow(10,-9)
+    CENTRAL_WAVELENGTH_AIR = 650 * math.pow(10, -9)
 
-	def __init__(layers: int, materials=None, thickness=None):
-		self.layers = layers
-		self.refractive_indices, self.center_wavelength = self.init_refractive_indices()
-		self.interfaces = self.init_interface(self.layers, self.refractive_indices)
-		self.dynamical_matrix = self.init_dynamical_matrix(self.layers, self.interfaces)
-		self.layer_thicknesses = self.init_layer_thicknesses(self.layers, self.central_wavelength)
-		
+    def __init__(self, layers: int, materials=None, thickness=None, spectrum_lower=None, spectrum_upper=None):
+        self.layers = layers
+        self.refractive_indices = materials if materials != None else self.init_refractive_indices()
+        self.center_wavelength = self.init_center_wavelength(
+            self.layers, self.refractive_indices)
+        self.interfaces = self.init_interface(
+            self.layers, self.refractive_indices)
+        self.dynamical_matrix = self.init_dynamical_matrix(
+            self.layers, self.interfaces)
+        self.layer_thicknesses = thickness if thickness != None else self.init_layer_thicknesses(
+            self.layers, self.center_wavelength)
+        self.ideal_power = TransferMatrixMethod.get_ideal_power(spectrum_lower, spectrum_upper) if (
+            spectrum_lower != None) and (spectrum_upper != None) else None
 
+    @staticmethod
+    def evaluate_solution(individual) -> float:
+        """This static method accepts a candidate and computes the
+            theoretical power and then normalizes it with the ideal
+            power"""
 
-	def init_refractive_indices(self, layers: int, substrate: float) -> dict:
-		""" This method initializes the refractive indices of the coating
-			layers. Layer0 is the represents the air, so the refractive index 
-			is assumed to be 1.000293. The last layer represents the solar panel
-			substrate and has an assumed refractive index of 3.5. The """
+        layers = len(individual)
+        refractive_indices = {"n0": 1.0}
+        thickness = {}
+        for l in range(layers):
+            refractive_indices["n"+str(l+1)] = individual[l]
+            thickness["d"+str(l+1)] = 0.25 * \
+                (TransferMatrixMethod.CENTRAL_WAVELENGTH_AIR/individual[l])
+        refractive_indices["n"+str(layers+1)] = 3.5
+        tmm = TransferMatrixMethod(layers, materials=refractive_indices,
+                                   thickness=thickness, spectrum_lower=400, spectrum_upper=1400)
+        candidate_power = tmm.calculate_power(400, 1400)
+        return candidate_power/tmm.ideal_power,
 
-		central_wavelength = {}
-		refractive_indices = {}
-		refractive_indices['n0'] = 1.000293
-		central_wavelength['CW0'] = CENTRAL_WAVELENGTH_AIR/refractive_indices['n0']
-		
-		for l in range(layers):
-			refractive_indices['n' + str(l+1)] = np.random.uniform(1.000293,3)
-			central_wavelength['CW' + str(l+1)] = CENTRAL_WAVELENGTH_AIR/refractive_indices['n' + str(l+1)]
-		refractive_indices['n' + str(layers+1)] = 3.5
-		central_wavelength['CW' + str(layers+1)] = CENTRAL_WAVELENGTH_AIR/refractive_indices['n' + str(layers+1)]
-		return refractive_indices, central_wavelength
+    @ staticmethod
+    def get_irradiance(wavelength: float) -> float:
+        """This static method computes the idealized 'blackbody' irradiance.
+            This quantity describes the amount of radiation absorbed by the solar
+            cell at a particular wavelength. """
+        return (6.16*math.pow(10, 15))/(math.pow(wavelength, 5) * ((math.exp((2484/wavelength))) - 1))
 
-	def init_interface(self, layers: int, refractive_indices: dict) -> dict:
-		""" This method computes the reflectance and transmittance
-			 at each interface. This calculation is based on Fresnel 
-			 equation for incident light """
+    @ staticmethod
+    def get_ideal_power(lower_bound: int, upper_bound: int) -> float:
+        """This static method computes the ideal power generated
+            by the solar cell. This assumes transmissivity is 100%.
+            """
+        return integrate.quad(lambda x: TransferMatrixMethod.get_irradiance(x), lower_bound, upper_bound)[0]
 
-		interfaces = {}
+    def init_refractive_indices(self, layers: int, materials: float) -> dict:
+        """ This method initializes the refractive indices of the coating
+                                        layers. Layer0 is the represents the air, so the refractive index
+                                        is assumed to be 1.000293. The last layer represents the solar panel
+                                        substrate and has an assumed refractive index of 3.5. The """
 
-		for l in range(layers):
-			interfaces['R' + str(l) + str(l+1)] = (refractive_indices['n' + str(l+1)] - refractive_indices['n' + str(l)])/(refractive_indices['n' + str(l+1)] + refractive_indices['n' + str(l)])
-			interfaces['T' + str(l) + str(l+1)] = 1 + interfaces['R' + str(l) + str(l+1)
-		interfaces['R' + str(layers) + str(layers+1)] = (refractive_indices['n' + str(layers+1)] - refractive_indices['n' + str(layers)])/(refractive_indices['n' + str(layers+1)] + refractive_indices['n' + str(layers)])
-		interfaces['T' + str(layers) + str(layers+1)] = 1 + interfaces['R' + str(layers) + str(layers+1)]
+        refractive_indices = {}
+        refractive_indices['n0'] = 1.000293
+        for l in range(layers):
+            refractive_indices['n' + str(l+1)] = np.random.uniform(1.000293, 3)
+        refractive_indices['n' + str(layers+1)] = 3.5
+        return refractive_indices
 
-		return interfaces
-		
-	def init_dynamical_matrix(self, layers: int, interfaces: dict) -> dict :
-		"""This method initializes the dynamical matrix used
-			in the TMM. """
+    def init_interface(self, layers: int, refractive_indices: dict) -> dict:
+        """This method computes the reflectance and transmittance at each interface.
+         This calculation is based on Fresnel equation for incident light"""
 
-		dynamical_matrix = {}
+        interfaces = {}
 
-		for l in range(layers):
-			t = interfaces["T" + str(l) + str(l+1)]
-			r = interfaces["T" + str(l) + str(l+1)]
-			dynamical_matrix["Q" + str(l) + str(l+1)] = (1/t) * np.array([[1,r],[r,1]])
+        for l in range(layers):
+            rf_ind_numerator = (
+                refractive_indices['n'+str(l)] - refractive_indices['n'+str(l+1)])
+            fr_ind_denominator = (
+                refractive_indices['n'+str(l+1)] + refractive_indices['n'+str(l)])
+            interfaces['R' + str(l) + str(l+1)
+                       ] = rf_ind_numerator / fr_ind_denominator
+            interfaces['T' + str(l) + str(l+1)] = 1 + \
+                interfaces['R' + str(l) + str(l+1)]
 
-		t = interfaces["T" + str(layers) + str(layers+1)]
-		r = interfaces["T" + str(layers) + str(layers+1)]
-		dynamical_matrix["Q" + str(layers) + str(layers+1)] = (1/t) * np.array([[1,r],[r,1]])
+        rf_ind_numerator = (
+            refractive_indices['n' + str(layers)] - refractive_indices['n'+str(layers+1)])
+        fr_ind_denominator = (
+            refractive_indices['n' + str(layers+1)] + refractive_indices['n' + str(layers)])
+        interfaces['R' + str(layers) + str(layers+1)
+                   ] = rf_ind_numerator/fr_ind_denominator
+        interfaces['T' + str(layers) + str(layers+1)] = 1 + \
+            interfaces['R'+str(layers)+str(layers+1)]
 
-		return dynamical_matrix
+        return interfaces
 
-	def init_layer_thicknesses(self, layers: int, central_wavelengths: dict) -> dict:
-		"""This method initializes the thickness for each layer"""
-		layer_thicknesses = {}
+    def init_center_wavelength(self, layers: int, refractive_indices: dict) -> dict:
+        """ This method initializes the central wavelength for each coating layer"""
+        CENTRAL_WAVELENGTH_AIR = 650 * math.pow(10, -9)
+        central_wavelength = {}
+        central_wavelength['CW0'] = CENTRAL_WAVELENGTH_AIR / \
+            refractive_indices['n0']
 
-		for l in range(layers):
-			layer_thicknesses["d" + str(l+1)] = central_wavelengths["CW" + str(l+1)]
-		
-		return layer_thicknesses
+        for l in range(layers):
+            central_wavelength['CW' + str(l+1)] = CENTRAL_WAVELENGTH_AIR / \
+                refractive_indices['n' + str(l+1)]
 
-	def calculate_transfer_matrix(self, wavelength: np.array) -> dict:
-		"""This method computes the transfer matrix which characterizes the trasmission and reflection
-		thought the antireflective coating. The transfer matrix is the matrix product of all the 
-		dynamical and propagation matrices"""
-		bounds = wavelength.shape[0]
-		transfer_matrix = self.dynamical_matrix["Q01"]
-		propagation_matrix = {}
-		for l in range(self.layers):
-			n = self.refractive_indices["n"+str(l+1)]
-			d = self.layer_thicknesses["d"+str(l+1)]
-			delta = ((2*cmath.pi)/wavelength)*n*d
-			exp_plus = np.exp(1j*delta)
-			exp_minus = np.exp(-1j*delta)
+        central_wavelength['CW' + str(layers+1)] = CENTRAL_WAVELENGTH_AIR / \
+            refractive_indices['n' + str(layers+1)]
+        return central_wavelength
 
-			zero = np.zeros(wavelength.shape)
-			propagation_matrix = np.ravel(np.array([exp_plus,zero,exp_minus,zero]), order="F").reshape(bounds,2,2)
-			transfer_matrix = transfer_matrix.dot(propagation_matrix)
-			transfer_matrix = transfer_matrix.dot( self.dynamical_matrix["Q"+str(l)+str(l+1)])
-		
-		return transfer_matrix
+    def init_dynamical_matrix(self, layers: int, interfaces: dict) -> dict:
+        """This method initializes the dynamical matrix used
+                                        in the TMM. """
 
-	def calculate_reflectance(self, transfer_matrix: numpy.array) -> numpy.array:
-		"""This method coating's reflectance for a particular wavelength"""
-		T_1_1 = transfer_matrix.ravel()[::4]
-		T_2_1 = transfer_matrix.ravel()[2::4]
-		return np.divide(T_2_1,T_1_1)
+        dynamical_matrix = {}
 
-	def getReflectivitySpectrum3Layers(dMatrix,layer1,layer2,layer3,lowerBound,upperBound):
+        for l in range(layers):
+            t = interfaces["T" + str(l) + str(l+1)]
+            r = interfaces["R" + str(l) + str(l+1)]
+            dynamical_matrix["Q" + str(l) + str(l+1)
+                             ] = (1/t) * np.array([[1, r], [r, 1]])
 
-	step = 1
-	w = np.arange(lowerBound, upperBound , step)
-	r = np.zeros((upperBound - lowerBound)/step)
-	count = 0
+        t = interfaces["T" + str(layers) + str(layers+1)]
+        r = interfaces["R" + str(layers) + str(layers+1)]
+        dynamical_matrix["Q" + str(layers) + str(layers+1)
+                         ] = (1/t) * np.array([[1, r], [r, 1]])
+        return dynamical_matrix
 
-	for wavelength in range(lowerBound,upperBound,step):
-		
-		wavelength = wavelength * math.pow(10,-9)
+    def init_layer_thicknesses(self, layers: int, central_wavelengths: dict) -> dict:
+        """This method initializes the thickness for each layer"""
+        layer_thicknesses = {}
 
-		tMatrix = calcTransferMatrix3Layers(dMatrix,layer1,layer2,layer3, wavelength)
-		reflectivity = calcReflectivity(tMatrix) * 100
-		r[count] = reflectivity
-		count = count+1
+        for l in range(layers):
+            layer_thicknesses["d" +
+                              str(l+1)] = central_wavelengths["CW" + str(l+1)]
 
-	return w,r
+        return layer_thicknesses
 
-def getTransmissivitySpectrum3Layers(dMatrix,layer1,layer2,layer3,lowerBound,upperBound):
+    def calculate_transfer_matrix(self, wavelength: np.array) -> np.array:
+        """This method computes the transfer matrix which characterizes
+        the trasmission and reflection thought the antireflective coating.
+        The transfer matrix is the matrix product of all the dynamical and propagation matrices"""
 
-	w = np.arange(lowerBound, upperBound ,1)
-	t = np.zeros((upperBound - lowerBound))
-	count = 0
+        transfer_matrix = self.dynamical_matrix["Q01"]
+        for l in range(self.layers):
+            n = self.refractive_indices["n"+str(l+1)]
+            d = self.layer_thicknesses["d"+str(l+1)]
+            delta = ((2*cmath.pi)/wavelength)*n*d
+            exp_plus = np.exp(1j*delta)
+            exp_minus = np.exp(-1j*delta)
 
-	for wavelength in range(lowerBound,upperBound,1):
-		
-		wavelength = wavelength * math.pow(10,-9)
-		tMatrix = calcTransferMatrix3Layers(dMatrix,layer1,layer2,layer3, wavelength)
-		transmissivity = calcTransmissivity(tMatrix) * 100
-		#print(wavelength* math.pow(10,9), transmissivity)
-		t[count] = transmissivity
-		count = count+1
+            propagation_matrix = np.array([[exp_plus, 0], [0, exp_minus]])
 
-	return w,t
+            transfer_matrix = transfer_matrix.dot(propagation_matrix)
+            transfer_matrix = transfer_matrix.dot(
+                self.dynamical_matrix["Q"+str(l+1)+str(l+2)])
 
+        return transfer_matrix
 
+    def calculate_reflectance(self, transfer_matrix: np.array) -> np.array:
+        """This method coating's reflectance for a particular wavelength"""
 
-def TripleLayerMain(n1,n2,n3,scale1,scale2,scale3):
-	lowerBound = 400
-	upperBound = 1400
+        T_1_1 = cmath.polar(transfer_matrix[1][0])[0]
+        T_2_1 = cmath.polar(transfer_matrix[0][0])[0]
+        return (T_2_1/T_1_1)**2
 
-	reflectCoefs, transCoefs, dynamicalMatrices = setMaterialParams3Layers(n1, n2,n3)
-	layer1, layer2, layer3 = setDesignParams3Layers(n1,n2,n3,scale1,scale2,scale3)
+    def calculate_transmittance(self, transfer_matrix: np.array) -> np.array:
+        """This method coating's reflectance for a particular wavelength"""
+        T_1_1 = cmath.polar(transfer_matrix[0][0])[0]
+        n0, n_substrate = self.refractive_indices["n0"], self.refractive_indices["n"+str(
+            self.layers+1)]
+        return (n_substrate/n0)*((1/T_1_1)**2)
 
-	wavelength, reflectivity = getReflectivitySpectrum3Layers(dynamicalMatrices,layer1,layer2,layer3, lowerBound,upperBound)
-	wavelength, transmissivity = getTransmissivitySpectrum3Layers(dynamicalMatrices,layer1,layer2, layer3, lowerBound,upperBound)
+    def calculate_power(self, wavelength: np.array) -> float:
+        """This method computes the theoretical power
+                                        produced using this solar cell and antireflective
+                                        coating."""
 
+        transfer_matrix = self.calculate_transfer_matrix(wavelength)
+        transmittance = self.calculate_transmittance(transfer_matrix)
 
-	power = calculatePower3Layers(dynamicalMatrices,layer1,layer2,layer3,200,2200)
+        calc_irradiance = np.vectorize(lambda x: (
+            6.16*(10**15))/((x**5)*(math.exp(2484/x)-1)))
+        irradiance = calc_irradiance(wavelength)
+        return np.sum(np.multiply(transmittance, irradiance))
 
-	return wavelength,reflectivity,transmissivity, power
+    def calculate_power(self, lower_bound: int, upper_bound) -> float:
+        """This method computes the theoretical power
+                                        produced using this solar cell and antireflective
+                                        coating."""
+        power = integrate.quad(lambda x: self.get_integrand(x),
+                               lower_bound, upper_bound)[0]
+        return power
 
-	def findOptimalTripleLayer():
+    def get_integrand(self, wavelength: float) -> float:
+        transfer_matrix = self.calculate_transfer_matrix(
+            wavelength * math.pow(10, -9))
+        transmissivity = self.calculate_transmittance(transfer_matrix)
 
-	maxPower = 0
-	maxPowerParams = [0]
+        irradiance = TransferMatrixMethod.get_irradiance(wavelength)
+        return transmissivity*irradiance
 
-	n1 = 1.4
-	n2 = 1.6
-	n3 = 3.15
+    def calculate_spectrum(self, lower_bound: int, upper_bound) -> dict:
+        length = int((upper_bound-lower_bound)/10)
+        spectrum = {
+            "S": np.arange(lower_bound, upper_bound, 10),
+            "T": np.zeros(length),
+            "R": np.zeros(length),
+        }
+        count = 0
+        for wavelength in range(lower_bound, upper_bound, 10):
+            wavelength = wavelength * math.pow(10, -9)
 
-	scale1 = 0.25
-	scale2 = 0.25
-	scale3 = 0.25
+            transfer_matrix = self.calculate_transfer_matrix(wavelength)
+            transmissivity = self.calculate_transmittance(
+                transfer_matrix)*100
+            reflectivity = 100-transmissivity
 
-	while(n2<=3):  #test n1 and n2 for range of values (1.33 - 4)
+            spectrum["T"][count] = transmissivity
+            spectrum["R"][count] = reflectivity
+            count = count+1
 
-
-		wavelength,reflectivity,transmissivity, power = TripleLayerMain(n1,n2,n3,scale1,scale2,scale3)
-
-		PowerParams = [power,round(n2,2)]
-
-		if (power > maxPower):
-			maxPower = power
-			maxPowerParams[0] = PowerParams
-		print(round(n2,2), "Power = " + str(round(power,3)),  "Current Max: " + str(maxPowerParams[0]))
-
-		n2 += 0.001
-
-	return maxPowerParams
-
-	def calculatePower3Layers(dMatrix,layer1,layer2,layer3,lowerBound,upperBound):
-	power = integrate.quad(lambda x: getIntegrand3Layers(dMatrix,layer1,layer2,layer3,x),lowerBound,upperBound)[0]
-	return power
-
-def getIntegrand3Layers(dMatrix,layer1,layer2,layer3, wavelength):
-	tMatrix = calcTransferMatrix3Layers(dMatrix,layer1,layer2,layer3, wavelength* math.pow(10,-9))
-	transmissivity = calcTransmissivity(tMatrix)
-	#transmissivity = 1
-	irradiance = (6.16*math.pow(10,15))/(math.pow(wavelength,5) * ((math.exp((2484/wavelength))) - 1))
-	return transmissivity*irradiance
+        return spectrum
