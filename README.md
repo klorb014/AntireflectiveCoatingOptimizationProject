@@ -4,4 +4,6 @@ This repo outlines an analysis of multilayer antireflective coatings. The goal i
 
 This repo aims to compare a few different optimization algorithms for this use case. Currently, the only implemented algorithm is a Particle Swarm algorithm.
 
+On top of searching for the best refractive index for each layer, the program will then attempt to map the refractive index to a corresponding material. The material-refractive index dataset is not very comprehensive, so the some of the combinations are not very practical in practice. 
+
 Read the README.ipynb for more information about the underlying theory.
